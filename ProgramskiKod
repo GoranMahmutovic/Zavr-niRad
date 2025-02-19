@@ -1,0 +1,692 @@
+import math
+
+def sysCall_init():
+    sim = require('sim')
+    simIk =require('simIK')
+    global vehicleReference, vehicleTarget, wheelJoints
+    global previousForwBackVel, previousLeftRightVel, previousRotVel
+
+    # Following for the movement of the vehicle, i.e. locomotion:
+    vehicleReference = sim.getObject('../youBot_vehicleReference')
+    vehicleTarget = sim.getObject('../youBot_vehicleTargetPosition')
+    sim.setObjectPosition(vehicleTarget, 0, [0, 0, 0])
+    sim.setObjectOrientation(vehicleTarget, 0, [0, 0, 0])
+    sim.setObjectParent(vehicleTarget, -1, True)
+
+    # Prepare initial values and retrieve handles:
+    wheelJoints = [-1, -1, -1, -1]  # front left, rear left, rear right, front right
+    wheelJoints[0] = sim.getObject('../rollingJoint_fl')
+    wheelJoints[1] = sim.getObject('../rollingJoint_rl')
+    wheelJoints[2] = sim.getObject('../rollingJoint_rr')
+    wheelJoints[3] = sim.getObject('../rollingJoint_fr')
+
+    previousForwBackVel = 0
+    previousLeftRightVel = 0
+    previousRotVel = 0
+
+def sysCall_actuation():
+    global previousForwBackVel, previousLeftRightVel, previousRotVel
+
+    # Following for the movement of the vehicle, i.e. locomotion:
+    relP = sim.getObjectPosition(vehicleTarget, vehicleReference)
+    relE = sim.getObjectOrientation(vehicleTarget, vehicleReference)
+    #print('r= ',relE)
+    pParam = 20
+    maxV = 10
+    pParamRot = 10
+    maxVRot = 10
+    accelF = 3
+    #forwBackVel = relP[2] * pParam
+    #leftRightVel = relP[1] * pParam
+    forwBackVel = relP[1] * pParam
+    leftRightVel = relP[0] * pParam
+    v = math.sqrt(forwBackVel**2 + leftRightVel**2)
+
+    if v > maxV:
+        forwBackVel *= maxV / v
+        leftRightVel *= maxV / v
+    #print(relE)
+    rotVel = -relE[2] * pParamRot
+    if abs(rotVel) > maxVRot:
+        rotVel = maxVRot * rotVel / abs(rotVel)
+
+    df = forwBackVel - previousForwBackVel
+    ds = leftRightVel - previousLeftRightVel
+    dr = rotVel - previousRotVel
+
+    if abs(df) > maxV * accelF:
+        df = abs(df) * (maxV * accelF) / df
+
+    if abs(ds) > maxV * accelF:
+        ds = abs(ds) * (maxV * accelF) / ds
+
+    if abs(dr) > maxVRot * accelF:
+        dr = abs(dr) * (maxVRot * accelF) / dr
+
+    forwBackVel = previousForwBackVel + df
+    leftRightVel = previousLeftRightVel + ds
+    rotVel = previousRotVel + dr
+
+    sim.setJointTargetVelocity(wheelJoints[0], -forwBackVel - leftRightVel - rotVel)
+    sim.setJointTargetVelocity(wheelJoints[1], -forwBackVel + leftRightVel - rotVel)
+    sim.setJointTargetVelocity(wheelJoints[2], -forwBackVel - leftRightVel + rotVel)
+    sim.setJointTargetVelocity(wheelJoints[3], -forwBackVel + leftRightVel + rotVel)
+
+    previousForwBackVel = forwBackVel
+    previousLeftRightVel = leftRightVel
+    previousRotVel = rotVel
+
+def getConfig(handles):
+    return [sim.getJointPosition(handle) for handle in handles]
+
+def openGripper():
+    sim.writeCustomStringData(gripper, 'activity', 'open')
+    sim.wait(0.1)
+
+def closeGripper():
+    sim.writeCustomStringData(gripper, 'activity', 'close')
+    sim.wait(0.1)
+
+def setGripperTargetMovingWithVehicle():
+    sim.setObjectParent(gripperTarget, vehicleReference, True)
+
+def setGripperTargetFixedToWorld():
+    sim.setObjectParent(gripperTarget, -1, True)
+
+def waitToReachVehicleTargetPositionAndOrientation():
+    while True:
+        sim.step()  # don't waste your time waiting!
+        p1 = sim.getObjectPosition(vehicleTarget)
+        p2 = sim.getObjectPosition(vehicleReference)
+        print
+        p = [p2[0] - p1[0], p2[1] - p1[1]]
+        #print('p =',p)
+        #print('vehicleTarget)[2] = ',vehicleTarget[2])
+        pError = math.sqrt(p[0]**2 + p[1]**2)
+        oError = abs(sim.getObjectOrientation(vehicleReference, vehicleTarget)[2])
+        if pError < 0.005 and oError < 0.5 * math.pi / 180:
+            break
+
+def getBoxAdjustedMatrixAndFacingAngle(boxHandle):
+    p2 = sim.getObjectPosition(boxHandle)
+    p1 = sim.getObjectPosition(vehicleReference)
+    p = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]]
+    pl = math.sqrt(p[0]**2 + p[1]**2 + p[2]**2)
+    p[0]=p[0]/pl
+    p[1]=p[1]/pl
+    p[2]=p[2]/pl
+    m=sim.getObjectMatrix(boxHandle)
+    matchingScore=0
+    
+    bestMatch = None
+
+    for i in range(3):
+        v=[m[0+i],m[4+i],m[8+i]]
+        score=v[0]*p[0]+v[1]*p[1]+v[2]*p[2]
+        if (abs(score)>matchingScore):
+            s=1
+            if (score<0):
+                s=-1
+            matchingScore=abs(score)
+            bestMatch=[v[0]*s,v[1]*s,v[2]*s]
+
+    angle = math.atan2(bestMatch[1], bestMatch[0])
+    m = sim.buildMatrix(p2, [0, 0, angle])
+    return m, angle - math.pi / 2
+
+def pickupBoxFromPlace(boxHandle, pickupConf):
+    m, angle = getBoxAdjustedMatrixAndFacingAngle(boxHandle)
+    sim.setObjectPosition(vehicleTarget, [m[4] - m[1] * dist1, m[8] - m[5] * dist1, 0])
+    sim.setObjectOrientation(vehicleTarget, [0, 0, angle])
+    
+    params = {
+        'joints': armJoints,
+        'targetPos': pickupConf,
+        'maxVel': fkSpeed,
+        'maxAccel': fkAccel,
+        'maxJerk': fkJerk,
+    }
+    sim.moveToConfig(params)
+    waitToReachVehicleTargetPositionAndOrientation()
+    setGripperTargetFixedToWorld()
+    
+    q = sim.getObjectPose(gripperTip)
+    q[0] = m[4]
+    q[1] = m[8]
+    
+    ikparams = {
+        'pose': sim.getObjectPose(gripperTip),
+        'targetPose': q,
+        'maxVel': ikSpeed,
+        'maxAccel': ikAccel,
+        'maxJerk': ikJerk,
+        'callback': ikcb2,
+        'auxData': ikData,
+        'metric': ikMetric
+    }
+    sim.moveToPose(ikparams)
+    openGripper()
+    q[2] = m[12]
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    closeGripper()
+    q[2] += 0.1
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    setGripperTargetMovingWithVehicle()
+
+def dropToPlatform(platform):
+    params = {
+        'joints': armJoints,
+        'targetPos': platform,
+        'maxVel': fkSpeed,
+        'maxAccel': [0.3] * 5,
+        'maxJerk': fkJerk,
+    }
+    sim.moveToConfig(params)
+    openGripper()
+
+def pickupFromPlatformAndReorient(boxHandle):
+    params = {
+        'joints': armJoints,
+        'targetPos': platformIntermediateDrop,
+        'maxVel': fkSpeed,
+        'maxAccel': fkAccel,
+        'maxJerk': fkJerk,
+    }
+    sim.moveToConfig(params)
+    q = sim.getObjectPose(boxHandle)
+    ikparams = {
+        'pose': sim.getObjectPose(gripperTip),
+        'targetPose': q,
+        'maxVel': ikSpeed,
+        'maxAccel': ikAccel,
+        'maxJerk': ikJerk,
+        'callback': ikcb1,
+        'auxData': ikData,
+        'metric': ikMetric
+    }
+    sim.moveToPose(ikparams)
+    closeGripper()
+    
+    # Move a bit back from current position:
+    m = sim.getObjectMatrix(vehicleTarget)
+    sim.setObjectPosition(vehicleTarget, [m[4] - m[2] * dist1, m[8] - m[6] * dist1, 0])
+    
+    # Now drop it
+    params['pos'] = getConfig(armJoints)
+    params['targetPos'] = pickup2
+    sim.moveToConfig(params)
+    openGripper()
+    
+    # Now orient yourself according to the box and pick it up:
+    m, angle = getBoxAdjustedMatrixAndFacingAngle(boxHandle)
+    sim.setObjectPosition(vehicleTarget, [m[4] - m[1] * dist1, m[8] - m[5] * dist1, 0])
+    sim.setObjectOrientation(vehicleTarget, [0, 0, angle])
+    waitToReachVehicleTargetPositionAndOrientation()
+    
+    params['pos'] = getConfig(armJoints)
+    params['targetPos'] = pickup2
+    sim.moveToConfig(params)
+    setGripperTargetFixedToWorld()
+    
+    q = sim.getObjectPose(gripperTip)
+    q[0] = m[4]
+    q[1] = m[8]
+    
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    ikparams['callback'] = ikcb2
+    sim.moveToPose(ikparams)
+    
+    q[2] = 0.03
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    closeGripper()
+    
+    q[2] += 0.1
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    setGripperTargetMovingWithVehicle()
+
+def dropToPlace(placeHandle, shift, verticalPos, startConf, noVerticalArmForUpMovement):
+    m, angle = getBoxAdjustedMatrixAndFacingAngle(placeHandle)
+    m[4] += m[2] * shift
+    m[8] += m[6] * shift
+    sim.setObjectPosition(vehicleTarget, [m[4] - m[1] * dist1, m[8] - m[5] * dist1, 0])
+    sim.setObjectOrientation(vehicleTarget, [0, 0, angle])
+    
+    params = {
+        'joints': armJoints,
+        'targetPos': startConf,
+        'maxVel': fkSpeed,
+        'maxAccel': fkAccel,
+        'maxJerk': fkJerk,
+    }
+    sim.moveToConfig(params)
+    
+    waitToReachVehicleTargetPositionAndOrientation()
+    setGripperTargetFixedToWorld()
+    
+    q = sim.getObjectPose(gripperTip)
+    q[0] = m[4]
+    q[1] = m[8]
+    
+    ikparams = {
+        'pose': sim.getObjectPose(gripperTip),
+        'targetPose': q,
+        'maxVel': ikSpeed,
+        'maxAccel': ikAccel,
+        'maxJerk': ikJerk,
+        'callback': ikcb2,
+        'auxData': ikData,
+        'metric': ikMetric
+    }
+    sim.moveToPose(ikparams)
+    
+    q[2] = verticalPos
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    openGripper()
+    
+    q[2] += 0.1
+    ikparams['pose'] = sim.getObjectPose(gripperTip)
+    ikparams['targetPose'] = q
+    sim.moveToPose(ikparams)
+    setGripperTargetMovingWithVehicle()
+
+def ikcb1(data):
+    sim.setObjectPose(data['auxData']['target'], data['pose'])
+    simIK.handleGroup(data['auxData']['ikEnv'], data['auxData']['ikGroups'][0], {'syncWorlds': True})
+
+def ikcb2(data):
+    sim.setObjectPose(data['auxData']['target'], data['pose'])
+    simIK.handleGroup(data['auxData']['ikEnv'], data['auxData']['ikGroups'][1], {'syncWorlds': True})
+
+def fkcb(config,handles):
+    for i in range(handles):
+        sim.setJointTargetPosition(handles[i],config[i])
+
+def sysCall_thread():
+    global gripperTarget, gripperTip, armJoints, gripper
+    global platformIntermediateDrop, pickup1, pickup2, pickup3
+    global dist1, dropHeight1, dropHeight2, dropHeight3
+    global ikSpeed, ikAccel, ikJerk, fkSpeed, fkAccel, fkJerk, ikMetric
+    global ikEnv, ikGroup1, ikGroup2, ikData
+
+    simBase = sim.getObject('../ArmControl')
+    simTarget = sim.getObject('/capture')
+    simTip = sim.getObject('../youBot_gripperPositionTip')
+    base2 = sim.getObject('../Rectangle22')
+    bf = sim.getObject('../Rectangle3')
+    gf1 = sim.getObject('/pallet1')
+    gf2 = sim.getObject('/pallet2')
+    constrBase2 = sim.getObject('../youBot_gripperOrientationTarget')
+    gripperTarget2 = sim.getObject('../youBot_gripperOrientationTarget')
+    gripperTip2 = sim.getObject('../youBot_gripperOrientationTip')
+
+    Pickup = sim.getObject('/PickUp')
+  
+    
+    armJoints = [0,0,0,0,0]
+    for i in range(0,5):
+        armJoints[i] = sim.getObject('../youBotArmJoint' + str(i))
+    print(armJoints)
+    gripper = sim.getObject('../youBot_gripper')
+    capture= sim.getObject('/capture')
+    place1 = sim.getObject('/Place1')
+    place2 = sim.getObject('/Place2')
+    place3 = sim.getObject('/Place3')
+    place4 = sim.getObject('/Place4')
+    place5 = sim.getObject('/Place5')
+    place6 = sim.getObject('/Place6')
+    block1 = sim.getObject('/c2')
+    block2 = sim.getObject('/c3')
+    block3 = sim.getObject('/c4')
+    block4 = sim.getObject('/c5')
+    block5 = sim.getObject('/c1')
+    #block4 = sim.getObject('/c5')
+    
+    
+    
+    
+    
+    
+    
+    pickup1 = [0, -14.52 * math.pi / 180, -70.27 * math.pi / 180, -95.27 * math.pi / 180, 0 * math.pi / 180]
+    pickup2 = [0, -13.39 * math.pi / 180, -93.91 * math.pi / 180, -72.72 * math.pi / 180, 90 * math.pi / 180]
+    pickup3 = [0, -14.52 * math.pi / 180, -70.27 * math.pi / 180, -95.27 * math.pi / 180, 90 * math.pi / 180]
+    platformIntermediateDrop = [0, 16 * math.pi / 180, 52 * math.pi / 180, 73 * math.pi / 180, 0 * math.pi / 180]
+    platformDrop1 = [0, 54.33 * math.pi / 180, 32.88 * math.pi / 180, 35.76 * math.pi / 180, 0 * math.pi / 180]
+    platformDrop2 = [0, 40.74 * math.pi / 180, 45.81 * math.pi / 180, 59.24 * math.pi / 180, 0 * math.pi / 180]
+    platformDrop3 = [0, 28.47 * math.pi / 180, 55.09 * math.pi / 180, 78.32 * math.pi / 180, 0 * math.pi / 180]
+
+    dist1 = 0.2
+    dropHeight1 = 0.035
+    dropHeight2 = 0.095
+    dropHeight3 = 0.155
+    ikSpeed = [0.2]
+    ikAccel = [0.1]
+    ikJerk = [0.1]
+    pickup1=[0,0,-80.27*math.pi/180,-75.27*math.pi/180,0*math.pi/180]
+    pickup2=[0,0,-80.27*math.pi/180,-75.27*math.pi/180,0*math.pi/180]
+    pickup3=[0,0,-78.27*math.pi/180,-70.27*math.pi/180,0*math.pi/180]
+    hold = [0,0,-78.27*math.pi/180,0*math.pi/180,0*math.pi/180]
+    drop = [90.0*math.pi,0,-80.27*math.pi/180,-75.27*math.pi/180,0*math.pi/180]
+    intial = [0,0.54,0.91,1.26,0]
+    fkSpeed=[1,1,1,1,1]
+    fkAccel=[0.6,0.6,0.6,0.6,0.6]
+    fkJerk = [1,1,1,1,1]
+    ikMetric = [1, 1, 1, 0.1]
+
+    
+    
+
+
+    
+    # redBox first pickup:
+    m, angle = getBoxAdjustedMatrixAndFacingAngle(Pickup)
+    print('m =',m)
+    print('m4 =',m[3])
+    print('m1 =',m[0])
+    print('m8 =',m[7])
+    print('m5 =',m[4])
+    print('angle =',angle)
+    print('dist1 = ',dist1)
+    m[3] = 0.75
+    m[0] = 0.999
+    m[7] = -4.81
+    m[4] = 0.000194
+    
+    #sim.setFloatSignal('cameraJoint',-159*math.pi/180)
+    #waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        print('p = ',sim.getJointPosition(armJoints[i]))
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, angle])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup1[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    closeGripper()
+    sim.wait(0.1)
+    
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+    m, angle = getBoxAdjustedMatrixAndFacingAngle(place1)
+    
+    #Drop
+    p = sim.getObjectPosition(place1,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(0.1)
+    openGripper()
+    
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(0.1)
+        
+    #pickup
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, 1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    sim.setObjectInt32Parameter(block5, sim.shapeintparam_static, 1)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup2[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    closeGripper()
+    sim.setObjectInt32Parameter(block5, sim.shapeintparam_static, 0)
+    sim.wait(0.1)
+    sim.setObjectParent(block5,bf)
+    #sim.wait(2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+        
+        
+    #Drop
+    p = sim.getObjectPosition(place2,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(0.1)
+    openGripper()
+    sim.setObjectParent(block5,gf1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(0.1)
+    
+    #Place Block
+    
+    sim.setObjectPosition(block1,[-1.221,0.212,0.251],sim.handle_world)
+    sim.wait(0.1)
+    
+    #pickup
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, 1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    sim.setObjectInt32Parameter(block1, sim.shapeintparam_static, 1)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup2[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    
+    closeGripper()
+    sim.setObjectParent(block1,bf)
+    sim.setObjectInt32Parameter(block1, sim.shapeintparam_static, 0)
+    #sim.wait(2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+
+    #Drop
+    p = sim.getObjectPosition(place3,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(0.1)
+    openGripper()
+    sim.setObjectParent(block1,gf1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(0.1)
+       
+    #sim.wait(10) 
+      
+      
+    #Second Pallet
+    sim.setObjectPosition(block2,[-1.221,0.212,0.251],sim.handle_world)
+    sim.wait(0.1)
+    
+    #pickup
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, 1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    sim.setObjectInt32Parameter(block2, sim.shapeintparam_static, 1)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup3[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    closeGripper()
+    sim.setObjectInt32Parameter(block2, sim.shapeintparam_static, 0)
+    sim.wait(0.1)
+    sim.setObjectParent(block2,bf)
+    #sim.wait(2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+
+    #Drop
+    p = sim.getObjectPosition(place4,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(0.1)
+    openGripper()
+    sim.setObjectParent(block2,gf2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(0.1)
+    #Place Block
+    sim.setObjectPosition(block3,[-1.221,0.212,0.251],sim.handle_world)
+    sim.wait(0.1)
+    
+    #pickup
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, 1.5708])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    sim.setObjectInt32Parameter(block3, sim.shapeintparam_static, 1)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup2[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    closeGripper()
+    sim.setObjectInt32Parameter(block3, sim.shapeintparam_static, 0)
+    sim.wait(0.1)
+    sim.setObjectParent(block3,bf)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+
+    #Drop
+    p = sim.getObjectPosition(place5,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(0.1)
+    openGripper()
+    sim.setObjectParent(block3,gf2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(0.1)
+    
+    
+    #Place Block
+    sim.setObjectPosition(block4,[-1.221,0.212,0.251],sim.handle_world)
+    sim.wait(0.1)
+    
+    #pickup
+    p = sim.getObjectPosition(Pickup,sim.handle_world)
+    
+    #print('p = ',p)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, 1.5708])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    openGripper()
+    sim.setObjectInt32Parameter(block4, sim.shapeintparam_static, 1)
+    sim.wait(0.1)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],pickup2[i])
+        sim.wait(0.1)
+    #
+    sim.wait(0.1)
+    sim.setObjectInt32Parameter(block4, sim.shapeintparam_static, 0)
+    sim.wait(0.1)
+    closeGripper()
+    sim.setObjectParent(block3,bf)
+    #sim.wait(2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],hold[i])
+        sim.wait(0.1)
+
+    #Drop
+    p = sim.getObjectPosition(place6,sim.handle_world)
+    repos = [p[0],p[1],p[2]]
+    sim.setObjectPosition(vehicleTarget,repos,sim.handle_world)
+    
+    sim.setObjectOrientation(vehicleTarget, [0, 0, -1.57])
+    #sim.setFloatSignal('cameraJoint', -159 * math.pi / 180)
+    waitToReachVehicleTargetPositionAndOrientation()
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],drop[i])
+        sim.wait(1)
+    openGripper()
+    sim.setObjectParent(block3,gf2)
+    for i in range(0,5):
+        sim.setJointTargetPosition(armJoints[i],intial[i])
+        sim.wait(1)
+    
+    
+    sim.stopSimulation()

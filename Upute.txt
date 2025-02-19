@@ -1,0 +1,1 @@
+Nakon preuzimanja datoteke simulacije, datoteku je potrebno otvoriti pomoću CoppeliaSim. Kada se simulacija otvori u simulatoru, simulaciju je potrebno pokrenuti preko start dugma.
